@@ -161,36 +161,79 @@
   <input type="time" id="time-picker" aria-hidden="true" />
 
   <!-- ============ 3. THE BRAIN (JavaScript) ============ -->
-  <script>
-    // ---------- THE DATA ----------
-    // Everything the app knows lives in this one object.
-    // In M2, this same shape will live in Firebase instead of the browser.
-    let state = load();
-    if (!state) {
-      // First run: seed one example list so it's not empty on first open.
-      // (A couple of due dates so you can see the overdue/today colors right away.)
-      state = {
-        currentListId: null,
-        lists: [{
-          id: uid(), name: "Groceries", items: [
-            { id: uid(), name: "Milk",    checked: false, dueDate: addDays(todayYMD(), -1) }, // overdue → red
-            { id: uid(), name: "Eggs",    checked: false, dueDate: todayYMD() },              // due today → amber
-            { id: uid(), name: "Bread",   checked: false },                                   // no due date
-            { id: uid(), name: "Bananas", checked: true  },
-          ]
-        }]
-      };
-      save();
-    }
+  <script type="module">
+    // ---------- FIREBASE (cloud sync) ----------
+    // Imported straight from Google's CDN — no build tools, no npm.
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+    import { getFirestore, doc, onSnapshot, setDoc }
+      from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
-    // ---------- SAVING / LOADING (the "where data lives" layer) ----------
-    function save() { localStorage.setItem("listsync", JSON.stringify(state)); }
-    function load() {
-      try { return JSON.parse(localStorage.getItem("listsync")); }
-      catch (e) { return null; }
-    }
+    const firebaseConfig = {
+      apiKey: "AIzaSyBX1K4MNoyllDnfwLwWbVyUNM-KEBzu1jQ",
+      authDomain: "listsync-5d6b2.firebaseapp.com",
+      projectId: "listsync-5d6b2",
+      storageBucket: "listsync-5d6b2.firebasestorage.app",
+      messagingSenderId: "966386909489",
+      appId: "1:966386909489:web:c551c107cf2760a6087010",
+    };
+    const fbApp = initializeApp(firebaseConfig);
+    const db = getFirestore(fbApp);
+    const sharedDoc = doc(db, "app", "shared");   // ONE document holds all the lists
+
+    // ---------- THE DATA ----------
+    // state.lists is the shared data (it lives in Firestore). currentListId is just
+    // which screen THIS phone is looking at, so it stays local to the device.
+    let state = { currentListId: null, lists: [] };
+    let connected = false;
+
     // a quick unique id, e.g. "lq8f3a-k29x1"
     function uid() { return Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 7); }
+
+    // ---------- SYNC: listen (read) + save (write) ----------
+    // Listen for cloud changes. Fires right away with the current data, then again
+    // every time EITHER phone changes something — that's what makes it live.
+    onSnapshot(sharedDoc, (snap) => {
+      connected = true;
+      if (!snap.exists()) { seedInitial(); return; }  // very first run ever
+      state.lists = snap.data().lists || [];
+      render();
+    }, (err) => {
+      connected = true;
+      console.error(err);
+      showError("Can't reach the database. In the Firebase console, make sure Firestore is created in TEST mode.");
+    });
+
+    // Save = push the whole lists array to the cloud. The listener above then echoes
+    // it back to every device (including this one). Intentionally dead simple.
+    function save() { setDoc(sharedDoc, { lists: state.lists }); }
+
+    // First-ever run: create a starter list so it isn't empty.
+    function seedInitial() {
+      state.lists = [{
+        id: uid(), name: "Groceries", items: [
+          { id: uid(), name: "Milk",    checked: false, dueDate: addDays(todayYMD(), -1) },
+          { id: uid(), name: "Eggs",    checked: false, dueDate: todayYMD() },
+          { id: uid(), name: "Bread",   checked: false },
+          { id: uid(), name: "Bananas", checked: true  },
+        ]
+      }];
+      save();    // persist to the cloud
+      render();  // and show it right away
+    }
+
+    // Friendly message instead of a blank screen if the cloud isn't reachable.
+    function showError(msg) {
+      const home = document.getElementById("lists");
+      if (home) { home.innerHTML = ""; home.append(el("p", { className: "empty", textContent: "⚠️ " + msg })); }
+      showView("home");
+    }
+    // Shown briefly while we wait for the first data from the cloud.
+    function renderConnecting() {
+      const home = document.getElementById("lists");
+      home.innerHTML = "";
+      home.append(el("p", { className: "empty", textContent: "Connecting…" }));
+      showView("home");
+    }
 
     // ---------- DUE DATES & CALENDAR REMINDERS ----------
     // Due dates are stored as plain "YYYY-MM-DD" text — the same format the date
@@ -338,6 +381,7 @@
     }
 
     function render() {
+      if (!connected) { renderConnecting(); return; }   // wait for the first cloud data
       const list = currentList();
       const back = document.getElementById("back-btn");
       const title = document.getElementById("title");
