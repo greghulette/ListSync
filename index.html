@@ -123,6 +123,15 @@
 
     /* one hidden date picker, reused for every item */
     #date-picker, #time-picker { position:fixed; left:12px; bottom:12px; width:1px; height:1px; opacity:0; }
+
+    /* little confirmation pop-up at the bottom of the screen */
+    #toast {
+      position:fixed; left:50%; bottom:24px; transform:translateX(-50%) translateY(20px);
+      background:#20283c; color:var(--text); padding:12px 16px; border-radius:12px;
+      font-size:14px; box-shadow:0 6px 20px rgba(0,0,0,.4); opacity:0; pointer-events:none;
+      transition:opacity .2s, transform .2s; max-width:90%; text-align:center; z-index:50;
+    }
+    #toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
   </style>
 </head>
 
@@ -159,6 +168,9 @@
   <!-- one shared, hidden date picker we pop open for any item's due date -->
   <input type="date" id="date-picker" aria-hidden="true" />
   <input type="time" id="time-picker" aria-hidden="true" />
+
+  <!-- Google Identity Services — for the one-time calendar authorization -->
+  <script src="https://accounts.google.com/gsi/client" async></script>
 
   <!-- ============ 3. THE BRAIN (JavaScript) ============ -->
   <script type="module">
@@ -267,35 +279,83 @@
       H = H % 12; if (H === 0) H = 12;
       return `${H}:${String(M).padStart(2, "0")} ${ap}`;
     }
-    // Build a Google Calendar "create event" link. With a time it's a 1-hour timed event;
-    // without one it's an all-day reminder on the due date.
-    function addToCalendar(item) {
-      let dates, extra = "";
-      if (item.dueTime) {
-        const t = item.dueTime.replace(":", "") + "00";           // 17:30 -> 173000
-        const start = item.dueDate.replaceAll("-", "") + "T" + t;  // 20260615T173000
-        const end = addMinutesDT(item.dueDate, item.dueTime, 60);  // +1 hour
-        dates = start + "/" + end;
-        const tz = Intl.DateTimeFormat().resolvedOptions().timeZone; // keep the right timezone
-        if (tz) extra = "&ctz=" + encodeURIComponent(tz);
-      } else {
-        const start = item.dueDate.replaceAll("-", "");
-        const end   = addDays(item.dueDate, 1).replaceAll("-", ""); // all-day end is exclusive
-        dates = start + "/" + end;
-      }
-      const url = "https://calendar.google.com/calendar/render?action=TEMPLATE"
-        + "&text="    + encodeURIComponent(item.name)
-        + "&dates="   + dates
-        + "&details=" + encodeURIComponent("Reminder from ListSync")
-        + extra;
-      window.open(url, "_blank");
+    // ---------- SILENT CALENDAR ADD (Google Calendar API) ----------
+    const GOOGLE_CLIENT_ID = "339318870126-fc1645r91259jeimrtag82m4f1estrsi.apps.googleusercontent.com";
+    const CALENDAR_ID = "ph61onmsfo58lrtk4g4rttokck@group.calendar.google.com"; // "Sarah Greg Kloey"
+    const CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events";
+    let tokenClient = null, accessToken = null, tokenExpiry = 0;
+
+    // Get a Google access token. First time on a device: one-time consent popup. After that: silent.
+    function getCalendarToken() {
+      return new Promise((resolve, reject) => {
+        if (accessToken && Date.now() < tokenExpiry - 60000) return resolve(accessToken);
+        if (!window.google?.accounts?.oauth2)
+          return reject(new Error("Google sign-in still loading — tap Remind again in a second."));
+        if (!tokenClient) {
+          tokenClient = google.accounts.oauth2.initTokenClient({
+            client_id: GOOGLE_CLIENT_ID, scope: CALENDAR_SCOPE, callback: () => {},
+          });
+        }
+        tokenClient.callback = (resp) => {
+          if (resp.error) return reject(new Error(resp.error));
+          localStorage.setItem("cal_granted", "1");
+          accessToken = resp.access_token;
+          tokenExpiry = Date.now() + (resp.expires_in || 3600) * 1000;
+          resolve(accessToken);
+        };
+        const firstTime = localStorage.getItem("cal_granted") !== "1";
+        tokenClient.requestAccessToken({ prompt: firstTime ? "consent" : "" });
+      });
     }
-    // The due date/time plus N minutes, in Google's "20260615T183000" format.
-    function addMinutesDT(ymd, hm, mins) {
+
+    // Turn an item into a Calendar event: a 1-hour timed event if it has a time, else all-day.
+    function buildEvent(item) {
+      const ev = { summary: item.name, description: "From ListSync" };
+      if (item.dueTime) {
+        const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        ev.start = { dateTime: localDT(item.dueDate, item.dueTime, 0),  timeZone: tz };
+        ev.end   = { dateTime: localDT(item.dueDate, item.dueTime, 60), timeZone: tz };
+      } else {
+        ev.start = { date: item.dueDate };
+        ev.end   = { date: addDays(item.dueDate, 1) };  // all-day end is exclusive
+      }
+      return ev;
+    }
+    // "2026-06-15T17:30:00" for the due date/time plus N minutes.
+    function localDT(ymd, hm, addMin) {
       const [y, m, d] = ymd.split("-").map(Number);
       const [H, M] = hm.split(":").map(Number);
-      const dt = new Date(y, m - 1, d, H, M + mins), p = n => String(n).padStart(2, "0");
-      return `${dt.getFullYear()}${p(dt.getMonth() + 1)}${p(dt.getDate())}T${p(dt.getHours())}${p(dt.getMinutes())}00`;
+      const dt = new Date(y, m - 1, d, H, M + addMin), p = n => String(n).padStart(2, "0");
+      return `${dt.getFullYear()}-${p(dt.getMonth()+1)}-${p(dt.getDate())}T${p(dt.getHours())}:${p(dt.getMinutes())}:00`;
+    }
+
+    // Tap 🔔 Remind → silently create the event on the "Sarah Greg Kloey" calendar.
+    async function addToCalendar(item) {
+      try {
+        const token = await getCalendarToken();
+        const res = await fetch(
+          "https://www.googleapis.com/calendar/v3/calendars/" + encodeURIComponent(CALENDAR_ID) + "/events",
+          { method: "POST",
+            headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json" },
+            body: JSON.stringify(buildEvent(item)) }
+        );
+        if (res.status === 401) { accessToken = null; throw new Error("Session expired — tap Remind again to re-approve."); }
+        if (!res.ok) throw new Error("Calendar said " + res.status + ": " + (await res.text()).slice(0, 140));
+        toast("Reminder added to “Sarah Greg Kloey” ✓");
+      } catch (e) {
+        console.error(e);
+        toast("Couldn't add reminder: " + (e.message || "unknown error"));
+      }
+    }
+
+    // Tiny pop-up message at the bottom of the screen.
+    function toast(msg) {
+      let t = document.getElementById("toast");
+      if (!t) { t = document.createElement("div"); t.id = "toast"; document.body.append(t); }
+      t.textContent = msg;
+      t.classList.add("show");
+      clearTimeout(toast._t);
+      toast._t = setTimeout(() => t.classList.remove("show"), 3500);
     }
     // The 📅 button opens ONE shared date picker, remembering which item we're editing.
     let editingItemId = null;

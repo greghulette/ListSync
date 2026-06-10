@@ -236,8 +236,15 @@ Still open (decide as we go):
 - **M1.3 — Times on due dates:** ✅ items can have an optional time (⏰ chip); the calendar
   link becomes a timed 1-hour event with the right timezone. Direct "silent add to a chosen
   calendar" needs Google sign-in + Calendar API (see §13) — deferred to pair with M2.
-- **M2 — Firebase sync:** ⬜ next. Swap the browser-storage for Firebase so both phones share
-  the same data in real time.
+- **M2a — Firebase sync:** ✅ wired. All lists live in one Firestore doc (`app/shared`); both
+  phones listen via `onSnapshot` and write the whole `lists` array on any change. Real-time,
+  but **no login yet** — Firestore is in **test mode**, so anyone with the URL shares the list.
+  (Single-doc, last-write-wins; fine for two people. Could go per-item granular later.)
+- **M2b — Google sign-in + locked rules:** ⬜ still to do, so the lists are private to you two.
+- **M2c — Silent calendar add:** ✅ done. 🔔 Remind writes the event straight onto the
+  "Sarah Greg Kloey" calendar via the Calendar API (Google Identity Services token client).
+  One-time consent per device, then fully silent. Client ID + Calendar ID live in `index.html`
+  (both are public identifiers, safe in the repo).
 
 ## 13. Due dates & reminders (feasibility + plan)
 
@@ -274,7 +281,11 @@ backend, so there was no reason to wait. Optional later: in-app niceties (app-ic
 needs the installable-PWA setup) and true push (M8). For now, the Google Calendar trick is
 our reminder.
 
-**Silent "add to a specific calendar" (no popup):** the pre-filled link always shows a
+**Silent "add to a specific calendar" (no popup):** ✅ **DONE (M2c)** via Google Identity
+Services + the Calendar API → writes to "Sarah Greg Kloey," one-time consent then silent.
+*(Original reasoning kept below for the record.)*
+
+The pre-filled link always shows a
 confirm/Save step and lands on your *primary* calendar — that's a limit of the link trick,
 not a bug. To insert events silently onto a chosen calendar (e.g. a shared "Household"
 calendar) we'd use the **Google Calendar API**, which needs a one-time Google sign-in +
