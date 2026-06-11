@@ -25,6 +25,9 @@
   so it syncs without bloating the lists. A thumbnail shows on the row; tap it to view big
   or remove.
 
+  NEW (light mode): tap ☀️/🌙 in the header to switch light/dark. The choice is remembered
+  on each device and defaults to your phone's system setting.
+
   To run it: just double-click this file. It opens in your browser.
   Everything you add is saved automatically and survives a refresh.
 
@@ -45,6 +48,19 @@
   <link rel="icon" href="icon.svg" />
   <link rel="apple-touch-icon" href="icon.svg" />
   <meta name="mobile-web-app-capable" content="yes" />
+
+  <!-- apply the saved/system theme BEFORE paint so there's no flash of the wrong colors -->
+  <script>
+    (function () {
+      var t = localStorage.getItem("theme");
+      if (!t) t = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+      if (t === "light") {
+        document.documentElement.classList.add("light");
+        var m = document.querySelector('meta[name="theme-color"]');
+        if (m) m.content = "#f4f6fb";
+      }
+    })();
+  </script>
 
   <!-- ============ 1. HOW IT LOOKS (CSS) ============ -->
   <style>
@@ -200,6 +216,22 @@
       gap:16px; padding:24px;
     }
     .lightbox img { max-width:100%; max-height:78vh; border-radius:12px; }
+
+    /* ============ LIGHT MODE ============ */
+    /* The toggle adds class="light" to <html>. We flip the neutral variables, then patch
+       the few spots that used white-on-dark washes (which would vanish on a light bg). */
+    html.light {
+      --bg:#f4f6fb; --card:#ffffff; --text:#1b2333;
+      --muted:#667085; --danger:#e5484d; --done:#9aa3b2; --line:#e2e6ef;
+    }
+    html.light .chip            { background:rgba(0,0,0,.06); }
+    html.light .chip.overdue    { background:rgba(229,72,77,.15); color:#b42318; }
+    html.light .chip.due-today  { background:rgba(217,160,0,.22); color:#8a5a00; }
+    html.light .chip.remind     { background:rgba(37,99,235,.13); color:#1d4ed8; }
+    html.light .icon-btn:hover  { background:rgba(0,0,0,.05); }
+    html.light .clear           { border-color:rgba(229,72,77,.35); }
+    html.light #signin-btn      { border:1px solid var(--line); }
+    html.light #toast           { background:#2b3344; color:#eef1f7; }
   </style>
 </head>
 
@@ -209,6 +241,7 @@
     <header>
       <button id="back-btn" class="icon-btn" title="Back">&#8249;</button>
       <h1 id="title">ListSync</h1>
+      <button id="theme-btn" class="icon-btn" title="Toggle light / dark">☀️</button>
       <button id="signout-btn" class="icon-btn" title="Sign out" style="display:none;">⎋</button>
     </header>
 
@@ -808,6 +841,23 @@
       if (c.includes("popup")) return "Sign-in window was closed before finishing.";
       return (e && e.message) || "Sign-in failed.";
     }
+
+    // ---------- LIGHT / DARK THEME ----------
+    // A tiny script in <head> already applied the saved/system theme before paint (no
+    // flash). Here we just wire the header toggle and remember the choice on THIS device.
+    const themeBtn = document.getElementById("theme-btn");
+    function applyThemeIcon() {
+      // show the icon for the mode you'd switch TO
+      themeBtn.textContent = document.documentElement.classList.contains("light") ? "🌙" : "☀️";
+    }
+    themeBtn.onclick = () => {
+      const isLight = document.documentElement.classList.toggle("light");
+      localStorage.setItem("theme", isLight ? "light" : "dark");
+      const meta = document.querySelector('meta[name="theme-color"]');
+      if (meta) meta.content = isLight ? "#f4f6fb" : "#0f1220";
+      applyThemeIcon();
+    };
+    applyThemeIcon();
 
     // ---------- GO! ----------
     render();
