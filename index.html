@@ -132,6 +132,25 @@
       transition:opacity .2s, transform .2s; max-width:90%; text-align:center; z-index:50;
     }
     #toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+
+    /* sign-in screen */
+    #signin {
+      position:fixed; inset:0; z-index:100; background:var(--bg);
+      display:none; align-items:center; justify-content:center; padding:24px;
+    }
+    #signin.show { display:flex; }
+    .signin-box { text-align:center; max-width:320px; width:100%; }
+    .signin-logo {
+      width:64px; height:64px; margin:0 auto 14px; border-radius:16px;
+      background:var(--accent); color:#fff; font-size:34px; line-height:64px;
+    }
+    .signin-box h2 { margin:0 0 6px; font-size:26px; }
+    .signin-box p  { color:var(--muted); margin:0 0 22px; }
+    #signin-btn {
+      width:100%; padding:14px 20px; border:none; border-radius:12px;
+      background:#fff; color:#222; font-size:16px; font-weight:600; cursor:pointer;
+    }
+    .signin-msg { color:var(--danger); font-size:14px; margin-top:16px; min-height:18px; }
   </style>
 </head>
 
@@ -141,6 +160,7 @@
     <header>
       <button id="back-btn" class="icon-btn" title="Back">&#8249;</button>
       <h1 id="title">ListSync</h1>
+      <button id="signout-btn" class="icon-btn" title="Sign out" style="display:none;">⎋</button>
     </header>
 
     <main>
@@ -165,6 +185,17 @@
     </main>
   </div>
 
+  <!-- Sign-in screen (covers everything until you sign in with Google) -->
+  <section id="signin">
+    <div class="signin-box">
+      <div class="signin-logo">✓</div>
+      <h2>ListSync</h2>
+      <p>Sign in to see your shared lists.</p>
+      <button id="signin-btn">Sign in with Google</button>
+      <p id="signin-msg" class="signin-msg"></p>
+    </div>
+  </section>
+
   <!-- one shared, hidden date picker we pop open for any item's due date -->
   <input type="date" id="date-picker" aria-hidden="true" />
   <input type="time" id="time-picker" aria-hidden="true" />
@@ -179,6 +210,8 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
     import { getFirestore, doc, onSnapshot, setDoc }
       from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+    import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged }
+      from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBX1K4MNoyllDnfwLwWbVyUNM-KEBzu1jQ",
@@ -190,6 +223,8 @@
     };
     const fbApp = initializeApp(firebaseConfig);
     const db = getFirestore(fbApp);
+    const auth = getAuth(fbApp);
+    const provider = new GoogleAuthProvider();
     const sharedDoc = doc(db, "app", "shared");   // ONE document holds all the lists
 
     // ---------- THE DATA ----------
@@ -201,19 +236,41 @@
     // a quick unique id, e.g. "lq8f3a-k29x1"
     function uid() { return Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 7); }
 
-    // ---------- SYNC: listen (read) + save (write) ----------
-    // Listen for cloud changes. Fires right away with the current data, then again
-    // every time EITHER phone changes something — that's what makes it live.
-    onSnapshot(sharedDoc, (snap) => {
-      connected = true;
-      if (!snap.exists()) { seedInitial(); return; }  // very first run ever
-      state.lists = snap.data().lists || [];
-      render();
-    }, (err) => {
-      connected = true;
-      console.error(err);
-      showError("Can't reach the database. In the Firebase console, make sure Firestore is created in TEST mode.");
+    // ---------- SIGN-IN GATE ----------
+    // Only show the app to a signed-in account. onAuthStateChanged fires on load with the
+    // saved session, and again whenever you sign in or out.
+    let unsubscribeSnap = null;
+    onAuthStateChanged(auth, (user) => {
+      if (user) {
+        document.getElementById("signin").classList.remove("show");
+        document.getElementById("signout-btn").style.display = "";
+        startSync();
+      } else {
+        if (unsubscribeSnap) { unsubscribeSnap(); unsubscribeSnap = null; }
+        connected = false; state.lists = [];
+        document.getElementById("signout-btn").style.display = "none";
+        document.getElementById("signin").classList.add("show");
+      }
     });
+
+    // ---------- SYNC: listen (read) + save (write) ----------
+    // Listen for cloud changes. Fires right away with current data, then again every
+    // time EITHER phone changes something — that's what makes it live.
+    function startSync() {
+      if (unsubscribeSnap) return;  // already listening
+      unsubscribeSnap = onSnapshot(sharedDoc, (snap) => {
+        connected = true;
+        if (!snap.exists()) { seedInitial(); return; }  // very first run ever
+        state.lists = snap.data().lists || [];
+        render();
+      }, (err) => {
+        connected = true;
+        console.error(err);
+        showError(err.code === "permission-denied"
+          ? "Your account isn't on the allow-list for these lists yet."
+          : "Can't reach the database. Make sure Firestore exists in the Firebase console.");
+      });
+    }
 
     // Save = push the whole lists array to the cloud. The listener above then echoes
     // it back to every device (including this one). Intentionally dead simple.
@@ -574,6 +631,23 @@
       editingItemId = null;
       save(); render();
     });
+
+    // ---------- SIGN-IN / SIGN-OUT BUTTONS ----------
+    document.getElementById("signin-btn").onclick = () => {
+      document.getElementById("signin-msg").textContent = "";
+      signInWithPopup(auth, provider).catch((e) => {
+        document.getElementById("signin-msg").textContent = friendlyAuthError(e);
+      });
+    };
+    document.getElementById("signout-btn").onclick = () => signOut(auth);
+
+    function friendlyAuthError(e) {
+      const c = (e && e.code) || "";
+      if (c.includes("unauthorized-domain")) return "This site isn't authorized in Firebase yet — add greghulette.github.io to Authorized domains.";
+      if (c.includes("operation-not-allowed")) return "Google sign-in isn't switched on in Firebase yet.";
+      if (c.includes("popup")) return "Sign-in window was closed before finishing.";
+      return (e && e.message) || "Sign-in failed.";
+    }
 
     // ---------- GO! ----------
     render();
