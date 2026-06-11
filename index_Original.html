@@ -10,16 +10,6 @@
   opens Google Calendar pre-filled, and Google handles the actual notification.
   That part needs no server at all — it's just a cleverly-built link.
 
-  NEW (compact rows): every item is now ONE tight line — checkbox, name, a small
-  due-date chip, and a ▾ caret. Tap the line to expand it and get the full chips
-  (📅 date, ⏰ time, 🔔 Remind) plus ✏️ edit and ✕ delete. Tap the checkbox to
-  check off instantly without expanding. A 20-item list scans much faster now.
-
-  NEW (list colors): every list gets its own identity color — a soft wash of one
-  of six hues over its row on the home screen (badge in the solid color), and the
-  header tints to match while you're inside the list. Colors are assigned
-  automatically when a list is created and sync like everything else.
-
   To run it: just double-click this file. It opens in your browser.
   Everything you add is saved automatically and survives a refresh.
 
@@ -46,13 +36,6 @@
     :root {
       --bg:#0f1220; --card:#1b2030; --accent:#4f8cff; --text:#e8ecf4;
       --muted:#8b93a7; --danger:#ff5d6c; --done:#5a6276; --line:#2a3146;
-      /* the six list identity colors + their badge text colors */
-      --list-0:#4f8cff; --list-0-text:#fff;    --tint-0:rgba(79,140,255,.14);
-      --list-1:#3ecf8e; --list-1-text:#0f1220; --tint-1:rgba(62,207,142,.12);
-      --list-2:#ffc107; --list-2-text:#0f1220; --tint-2:rgba(255,193,7,.10);
-      --list-3:#ff7ac6; --list-3-text:#0f1220; --tint-3:rgba(255,122,198,.12);
-      --list-4:#b07cff; --list-4-text:#fff;    --tint-4:rgba(176,124,255,.13);
-      --list-5:#45d6e0; --list-5-text:#0f1220; --tint-5:rgba(69,214,224,.11);
     }
     * { box-sizing: border-box; }
     body {
@@ -83,35 +66,17 @@
       padding:2px 10px; font-size:14px; min-width:26px; text-align:center;
     }
 
-    /* each list's identity color: a soft wash over the card for rows + the
-       detail-view header, and the solid color on the count badge */
-    .row.list-0, header.list-0 { background:linear-gradient(var(--tint-0),var(--tint-0)), var(--card); }
-    .row.list-1, header.list-1 { background:linear-gradient(var(--tint-1),var(--tint-1)), var(--card); }
-    .row.list-2, header.list-2 { background:linear-gradient(var(--tint-2),var(--tint-2)), var(--card); }
-    .row.list-3, header.list-3 { background:linear-gradient(var(--tint-3),var(--tint-3)), var(--card); }
-    .row.list-4, header.list-4 { background:linear-gradient(var(--tint-4),var(--tint-4)), var(--card); }
-    .row.list-5, header.list-5 { background:linear-gradient(var(--tint-5),var(--tint-5)), var(--card); }
-    .badge.list-0 { background:var(--list-0); color:var(--list-0-text); }
-    .badge.list-1 { background:var(--list-1); color:var(--list-1-text); }
-    .badge.list-2 { background:var(--list-2); color:var(--list-2-text); }
-    .badge.list-3 { background:var(--list-3); color:var(--list-3-text); }
-    .badge.list-4 { background:var(--list-4); color:var(--list-4-text); }
-    .badge.list-5 { background:var(--list-5); color:var(--list-5-text); }
-
     .item-row .box { font-size:20px; width:24px; }
     .item-row.done { opacity:.55; }
     .item-row.done .item-name { text-decoration:line-through; color:var(--done); }
 
-    /* item rows are ONE compact line (checkbox + name + mini due chip + caret).
-       Tapping the line expands it into a detail line with the full chips and
-       the edit/delete buttons. Denser than list rows on purpose. */
-    .item-row { flex-direction:column; align-items:stretch; gap:8px; cursor:default;
-                padding:10px 14px; margin-bottom:8px; }
-    .item-top  { display:flex; align-items:center; gap:12px; cursor:pointer; min-height:28px; }
-    .item-sub  { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding-left:36px; }
-    .due-mini  { padding:3px 8px; font-size:12px; pointer-events:none; white-space:nowrap; }
-    .caret     { color:var(--muted); font-size:12px; user-select:none; }
-    .flex-spacer { flex:1; }
+    /* item rows can be two lines: a top line (checkbox + name + actions) and an
+       optional sub-line showing the due date + a "Remind" button */
+    .item-row { flex-direction:column; align-items:stretch; gap:8px; cursor:default; }
+    .item-top  { display:flex; align-items:center; gap:12px; }
+    .item-main { display:flex; align-items:center; gap:12px; flex:1; min-width:0; cursor:pointer; }
+    .item-actions { display:flex; align-items:center; }
+    .item-sub  { display:flex; flex-wrap:wrap; gap:8px; padding-left:36px; }
 
     .chip {
       border:none; border-radius:999px; padding:6px 10px;
@@ -314,7 +279,7 @@
     // First-ever run: create a starter list so it isn't empty.
     function seedInitial() {
       state.lists = [{
-        id: uid(), name: "Groceries", color: 0, items: [
+        id: uid(), name: "Groceries", items: [
           { id: uid(), name: "Milk",    checked: false, dueDate: addDays(todayYMD(), -1) },
           { id: uid(), name: "Eggs",    checked: false, dueDate: todayYMD() },
           { id: uid(), name: "Bread",   checked: false },
@@ -476,18 +441,10 @@
     // ---------- ACTIONS (each one changes data, saves, redraws) ----------
     function currentList() { return state.lists.find(l => l.id === state.currentListId) || null; }
 
-    // Each list's color: use the stored one, else derive a stable one from its id
-    // (so lists made before this feature existed still get a consistent color).
-    function colorOf(list) {
-      if (list.color != null) return list.color % 6;
-      let h = 0; for (const ch of list.id) h += ch.charCodeAt(0);
-      return h % 6;
-    }
-
     function addList(name) {
       name = name.trim();
       if (!name) return;
-      state.lists.push({ id: uid(), name, items: [], color: state.lists.length % 6 });
+      state.lists.push({ id: uid(), name, items: [] });
       save(); render();
     }
     function deleteList(id) {
@@ -522,7 +479,6 @@
     function deleteItem(itemId) {
       const list = currentList();
       list.items = list.items.filter(i => i.id !== itemId);
-      expandedIds.delete(itemId);   // tidy up the expansion memory
       save(); render();
     }
     function clearChecked() {
@@ -546,8 +502,6 @@
       const list = currentList();
       const back = document.getElementById("back-btn");
       const title = document.getElementById("title");
-      // tint the header with the open list's color (plain card color on home)
-      document.querySelector("header").className = list ? "list-" + colorOf(list) : "";
       if (list) {
         title.textContent = list.name;
         back.style.visibility = "visible";
@@ -576,10 +530,9 @@
       for (const list of state.lists) {
         const remaining = list.items.filter(i => !i.checked).length;
         const open = () => openList(list.id);
-        const c = "list-" + colorOf(list);
-        box.append(el("div", { className: "row " + c }, [
+        box.append(el("div", { className: "row" }, [
           el("span", { className: "row-name", textContent: list.name, onclick: open }),
-          el("span", { className: "badge " + c, textContent: String(remaining), onclick: open }),
+          el("span", { className: "badge", textContent: String(remaining), onclick: open }),
           el("button", { className: "icon-btn", textContent: "🗑", title: "Delete list",
                          onclick: () => deleteList(list.id) }),
         ]));
@@ -604,65 +557,41 @@
       document.getElementById("clear-btn").style.display = checked.length ? "block" : "none";
     }
 
-    // ---------- COMPACT, EXPANDABLE ITEM ROWS ----------
-    // Which items are currently showing their detail line. This is pure UI state:
-    // it stays on THIS device (not synced) and resets on refresh — that's fine.
-    const expandedIds = new Set();
-    function toggleExpanded(itemId) {
-      if (expandedIds.has(itemId)) expandedIds.delete(itemId);
-      else expandedIds.add(itemId);
-      render();
-    }
-
     function itemRow(item) {
-      const expanded = expandedIds.has(item.id);
-
-      // the one compact line: checkbox (taps check off, never expand), name,
-      // a small read-only due chip, and a ▾/▴ caret. Tapping the line expands.
-      const top = el("div", { className: "item-top", onclick: () => toggleExpanded(item.id) }, [
-        el("span", { className: "box", textContent: item.checked ? "☑" : "☐",
-                     onclick: (e) => { e.stopPropagation(); toggleItem(item.id); } }),
+      // top line: checkbox + name (tap to check off), then 📅 set-due and ✕ delete
+      const main = el("div", { className: "item-main", onclick: () => toggleItem(item.id) }, [
+        el("span", { className: "box", textContent: item.checked ? "☑" : "☐" }),
         el("span", { className: "item-name", textContent: item.name }),
       ]);
-      if (!expanded && item.dueDate) {
-        top.append(el("span", {
-          className: ("chip due-mini " + dueClass(item)).trim(),
-          textContent: "📅 " + formatDue(item.dueDate) +
-                       (item.dueTime ? " · " + formatTime(item.dueTime) : ""),
-        }));
-      }
-      top.append(el("span", { className: "caret", textContent: expanded ? "▴" : "▾" }));
+      const actions = el("div", { className: "item-actions" }, [
+        el("button", { className: "icon-btn", textContent: "✏️", title: "Edit name",
+                       onclick: () => renameItem(item.id) }),
+        el("button", { className: "icon-btn", textContent: "📅", title: "Set due date",
+                       onclick: () => editDueDate(item.id) }),
+        el("button", { className: "icon-btn", textContent: "✕", title: "Delete item",
+                       onclick: () => deleteItem(item.id) }),
+      ]);
+      const children = [ el("div", { className: "item-top" }, [main, actions]) ];
 
-      const children = [top];
-
-      // the detail line, only while expanded: full chips + edit/delete on the right
-      if (expanded) {
-        const sub = [];
-        if (item.dueDate) {
-          sub.push(el("button", { className: "chip " + dueClass(item), title: "Change due date",
+      // the sub-line only appears once an item HAS a due date
+      if (item.dueDate) {
+        const sub = [
+          el("button", { className: "chip " + dueClass(item), title: "Change due date",
                          textContent: "📅 " + formatDue(item.dueDate),
-                         onclick: () => editDueDate(item.id) }));
-          if (item.dueTime) {
-            sub.push(el("button", { className: "chip", title: "Change time",
-                           textContent: "⏰ " + formatTime(item.dueTime),
-                           onclick: () => editDueTime(item.id) }));
-            sub.push(el("button", { className: "chip", title: "Remove time",
-                           textContent: "✕", onclick: () => clearDueTime(item.id) }));
-          } else {
-            sub.push(el("button", { className: "chip muted", title: "Add a time",
-                           textContent: "⏰ Add time", onclick: () => editDueTime(item.id) }));
-          }
-          sub.push(el("button", { className: "chip remind", title: "Add to Google Calendar",
-                         textContent: "🔔 Remind", onclick: () => addToCalendar(item) }));
+                         onclick: () => editDueDate(item.id) }),
+        ];
+        if (item.dueTime) {
+          sub.push(el("button", { className: "chip", title: "Change time",
+                         textContent: "⏰ " + formatTime(item.dueTime),
+                         onclick: () => editDueTime(item.id) }));
+          sub.push(el("button", { className: "chip clear-time", title: "Remove time",
+                         textContent: "✕", onclick: () => clearDueTime(item.id) }));
         } else {
-          sub.push(el("button", { className: "chip muted", title: "Set due date",
-                         textContent: "📅 Add due date", onclick: () => editDueDate(item.id) }));
+          sub.push(el("button", { className: "chip muted", title: "Add a time",
+                         textContent: "⏰ Add time", onclick: () => editDueTime(item.id) }));
         }
-        sub.push(el("span", { className: "flex-spacer" }));
-        sub.push(el("button", { className: "icon-btn", textContent: "✏️", title: "Edit name",
-                       onclick: () => renameItem(item.id) }));
-        sub.push(el("button", { className: "icon-btn", textContent: "✕", title: "Delete item",
-                       onclick: () => deleteItem(item.id) }));
+        sub.push(el("button", { className: "chip remind", title: "Add to Google Calendar",
+                       textContent: "🔔 Remind", onclick: () => addToCalendar(item) }));
         children.push(el("div", { className: "item-sub" }, sub));
       }
       return el("div", { className: "row item-row" + (item.checked ? " done" : "") }, children);
