@@ -482,14 +482,19 @@
 
     // Turn an item into a Calendar event: a 1-hour timed event if it has a time, else all-day.
     function buildEvent(item) {
-      const ev = { summary: item.name, description: "From ListSync" };
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      // an explicit popup notification so the reminder actually pings — the calendar's own
+      // default reminders may be off. Fires at the event's start time.
+      const ev = { summary: item.name, description: "From ListSync",
+                   reminders: { useDefault: false, overrides: [{ method: "popup", minutes: 0 }] } };
       if (item.dueTime) {
-        const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
         ev.start = { dateTime: localDT(item.dueDate, item.dueTime, 0),  timeZone: tz };
         ev.end   = { dateTime: localDT(item.dueDate, item.dueTime, 60), timeZone: tz };
       } else {
-        ev.start = { date: item.dueDate };
-        ev.end   = { date: addDays(item.dueDate, 1) };  // all-day end is exclusive
+        // No time set → a 9:00 AM reminder on the due date. (A true all-day event can't carry
+        // a reliable timed notification, so we use a short 9 AM event so you actually get pinged.)
+        ev.start = { dateTime: item.dueDate + "T09:00:00", timeZone: tz };
+        ev.end   = { dateTime: item.dueDate + "T09:30:00", timeZone: tz };
       }
       return ev;
     }
@@ -679,10 +684,16 @@
       const q = nameKey(query);
       if (!q) return [];                                 // no dropdown until you type
       const list = currentList(); if (!list) return [];
-      const present = new Set(list.items.map(i => nameKey(i.name)));
-      // candidates come ONLY from THIS list's own history
-      return Object.values(historyByList[list.id] || {})
-        .filter(h => nameKey(h.name).includes(q) && !present.has(nameKey(h.name)))
+      // candidates = THIS list's saved history + the items currently on it (local, instant),
+      // so suggestions show immediately and never pull from other lists
+      const cand = new Map();   // nameKey -> { name, lastUsed }
+      for (const h of Object.values(historyByList[list.id] || {})) cand.set(nameKey(h.name), h);
+      for (const it of list.items) {
+        const k = nameKey(it.name);
+        if (!cand.has(k)) cand.set(k, { name: it.name, lastUsed: 0 });
+      }
+      return [...cand.values()]
+        .filter(h => nameKey(h.name).includes(q))
         .sort((a, b) => {
           const ap = nameKey(a.name).startsWith(q) ? 0 : 1;          // prefix matches first…
           const bp = nameKey(b.name).startsWith(q) ? 0 : 1;
