@@ -168,6 +168,18 @@
       color:#fff; font-size:24px; cursor:pointer;
     }
 
+    /* autocomplete dropdown under the add-item box */
+    #suggest {
+      position:absolute; top:calc(100% + 4px); left:0; right:0; z-index:6;
+      background:var(--card); border:1px solid var(--line); border-radius:12px;
+      box-shadow:0 10px 26px rgba(0,0,0,.32); overflow:hidden; display:none;
+    }
+    #suggest.show { display:block; }
+    .suggest-row { display:flex; align-items:center; gap:10px; padding:11px 14px; cursor:pointer; }
+    .suggest-row:hover { background:rgba(127,127,127,.12); }
+    .suggest-row .thumb { width:26px; height:26px; }
+    .suggest-name { flex:1; font-size:16px; }
+
     .clear {
       display:block; width:100%; padding:14px; margin-top:6px;
       border:1px solid #3a2030; border-radius:12px; background:transparent;
@@ -258,8 +270,9 @@
       <!-- DETAIL VIEW: the items inside one list -->
       <section id="detail" style="display:none;">
         <div class="add-bar sticky">
-          <input id="new-item-input" placeholder="Add an item…" />
+          <input id="new-item-input" placeholder="Add an item…" autocomplete="off" />
           <button id="add-item-btn" title="Add item">+</button>
+          <div id="suggest"></div>
         </div>
         <div id="items"></div>
         <button id="clear-btn" class="clear">Clear checked items</button>
@@ -309,9 +322,11 @@
     const auth = getAuth(fbApp);
     const provider = new GoogleAuthProvider();
     const sharedDoc = doc(db, "app", "shared");   // ONE document holds all the lists
-    const photosCol = collection(db, "photos");   // each item's photo is its own small record
-    const photos = new Map();                      // itemId -> compressed image (data URL)
-    let photoTargetId = null;                      // which item we're attaching a photo to
+    const historyDoc = doc(db, "app", "history"); // remembered item names (for autocomplete)
+    const photosCol = collection(db, "photos");   // each photo is its own small record, keyed by NAME
+    const photos = new Map();                      // nameKey -> compressed image (data URL)
+    const history = new Map();                     // nameKey -> { name, lastUsed }
+    let photoTargetKey = null;                     // which name we're attaching a photo to
 
     // ---------- THE DATA ----------
     // state.lists is the shared data (it lives in Firestore). currentListId is just
@@ -325,16 +340,17 @@
     // ---------- SIGN-IN GATE ----------
     // Only show the app to a signed-in account. onAuthStateChanged fires on load with the
     // saved session, and again whenever you sign in or out.
-    let unsubscribeSnap = null, unsubscribePhotos = null;
+    let unsubscribeSnap = null, unsubscribePhotos = null, unsubscribeHistory = null;
     onAuthStateChanged(auth, (user) => {
       if (user) {
         document.getElementById("signin").classList.remove("show");
         document.getElementById("signout-btn").style.display = "";
         startSync();
       } else {
-        if (unsubscribeSnap)   { unsubscribeSnap();   unsubscribeSnap = null; }
-        if (unsubscribePhotos) { unsubscribePhotos(); unsubscribePhotos = null; }
-        connected = false; state.lists = []; photos.clear();
+        if (unsubscribeSnap)    { unsubscribeSnap();    unsubscribeSnap = null; }
+        if (unsubscribePhotos)  { unsubscribePhotos();  unsubscribePhotos = null; }
+        if (unsubscribeHistory) { unsubscribeHistory(); unsubscribeHistory = null; }
+        connected = false; state.lists = []; photos.clear(); history.clear();
         document.getElementById("signout-btn").style.display = "none";
         document.getElementById("signin").classList.add("show");
       }
@@ -357,13 +373,19 @@
           ? "Your account isn't on the allow-list for these lists yet."
           : "Can't reach the database. Make sure Firestore exists in the Firebase console.");
       });
-      // photos live in their own little records, loaded/updated independently of the lists
+      // photos live in their own little records (keyed by item name), loaded independently
       unsubscribePhotos = onSnapshot(photosCol, (snap) => {
         snap.docChanges().forEach(ch => {
           if (ch.type === "removed") photos.delete(ch.doc.id);
           else photos.set(ch.doc.id, ch.doc.data().data);
         });
         render();
+      });
+      // the shared name history for autocomplete (doesn't affect the visible list)
+      unsubscribeHistory = onSnapshot(historyDoc, (snap) => {
+        history.clear();
+        const names = (snap.exists() && snap.data().names) || {};
+        for (const k in names) history.set(k, names[k]);
       });
     }
 
@@ -563,6 +585,8 @@
       const list = currentList(); name = name.trim();
       if (!list || !name) return;
       list.items.push({ id: uid(), name, checked: false });
+      recordHistory(name);                                       // remember it for autocomplete
+      document.getElementById("suggest").classList.remove("show");
       save(); render();
     }
     function renameItem(itemId) {
@@ -572,6 +596,7 @@
       if (name === null) return;                      // user hit Cancel
       if (!name.trim()) return;                       // ignore an empty name
       item.name = name.trim();
+      recordHistory(item.name);
       save(); render();
     }
     function toggleItem(itemId) {
@@ -583,23 +608,24 @@
       const list = currentList();
       list.items = list.items.filter(i => i.id !== itemId);
       expandedIds.delete(itemId);   // tidy up the expansion memory
-      removePhoto(itemId);          // and its photo record, if any
-      save(); render();
+      save(); render();             // photo is KEPT (keyed by name = part of history)
     }
     function clearChecked() {
       const list = currentList();
-      list.items.filter(i => i.checked).forEach(i => removePhoto(i.id));  // drop their photos too
-      list.items = list.items.filter(i => !i.checked);
+      list.items = list.items.filter(i => !i.checked);  // photos are KEPT (history)
       save(); render();
     }
 
-    // ---------- PHOTOS (compressed, each stored as its own small record) ----------
-    function pickPhoto(itemId) {
-      photoTargetId = itemId;
+    // ---------- PHOTOS (compressed, each stored as its own small record, keyed by NAME) ----------
+    // Keying by the normalized name means a photo is retained across lists and re-appears
+    // whenever you add an item with that name again.
+    function nameKey(name) { return (name || "").trim().toLowerCase(); }
+    function pickPhoto(item) {
+      photoTargetKey = nameKey(item.name);
       document.getElementById("photo-input").click();
     }
-    function removePhoto(itemId) {
-      if (photos.has(itemId)) deleteDoc(doc(db, "photos", itemId)).catch(e => console.error(e));
+    function removePhoto(key) {
+      if (photos.has(key)) deleteDoc(doc(db, "photos", key)).catch(e => console.error(e));
     }
     // Shrink a photo on-device to a sharp-but-small JPEG that fits in one cloud record.
     function compressImage(file, maxDim, quality) {
@@ -620,16 +646,61 @@
         img.src = URL.createObjectURL(file);
       });
     }
-    // Tap a thumbnail → view it big, with a remove option.
-    function openLightbox(itemId) {
-      const url = photos.get(itemId); if (!url) return;
+    // Tap a thumbnail → view it big, with a remove option (removes it from history too).
+    function openLightbox(item) {
+      const key = nameKey(item.name), url = photos.get(key); if (!url) return;
       const overlay = el("div", { className: "lightbox" }, [
         el("img", { src: url, onclick: (e) => e.stopPropagation() }),
         el("button", { className: "chip", textContent: "🗑 Remove photo",
-                       onclick: (e) => { e.stopPropagation(); removePhoto(itemId); overlay.remove(); } }),
+                       onclick: (e) => { e.stopPropagation(); removePhoto(key); overlay.remove(); } }),
       ]);
       overlay.onclick = () => overlay.remove();
       document.body.append(overlay);
+    }
+
+    // ---------- ITEM HISTORY + AUTOCOMPLETE ----------
+    // A shared, growing set of names you've used (stored in app/history — just names +
+    // timestamps, so it's small). Typing in the add box filters this for suggestions.
+    function recordHistory(name) {
+      const key = nameKey(name);
+      if (!key) return;
+      setDoc(historyDoc, { names: { [key]: { name: name.trim(), lastUsed: Date.now() } } }, { merge: true });
+    }
+    function suggestionsFor(query) {
+      const q = nameKey(query);
+      if (!q) return [];
+      const list = currentList();
+      const present = new Set((list ? list.items : []).map(i => nameKey(i.name)));
+      return [...history.values()]
+        .filter(h => nameKey(h.name).includes(q) && !present.has(nameKey(h.name)))
+        .sort((a, b) => {
+          const ap = nameKey(a.name).startsWith(q) ? 0 : 1;          // prefix matches first…
+          const bp = nameKey(b.name).startsWith(q) ? 0 : 1;
+          return ap !== bp ? ap - bp : (b.lastUsed || 0) - (a.lastUsed || 0);  // …then most recent
+        })
+        .slice(0, 6);
+    }
+    function renderSuggestions() {
+      const box = document.getElementById("suggest");
+      const matches = suggestionsFor(document.getElementById("new-item-input").value);
+      box.innerHTML = "";
+      if (!matches.length) { box.classList.remove("show"); return; }
+      for (const h of matches) {
+        const key = nameKey(h.name), kids = [];
+        if (photos.has(key)) kids.push(el("img", { className: "thumb", src: photos.get(key), alt: "" }));
+        kids.push(el("span", { className: "suggest-name", textContent: h.name }));
+        if (photos.has(key)) kids.push(el("span", { textContent: "📷" }));
+        const row = el("div", { className: "suggest-row" }, kids);
+        row.onmousedown = (e) => { e.preventDefault(); chooseSuggestion(h.name); };  // keep input focused
+        box.append(row);
+      }
+      box.classList.add("show");
+    }
+    function chooseSuggestion(name) {
+      const input = document.getElementById("new-item-input");
+      addItem(name);            // adds it (its retained photo shows automatically) + hides the box
+      input.value = "";
+      input.focus();
     }
 
     // ---------- DRAWING THE SCREEN ----------
@@ -717,6 +788,7 @@
 
     function itemRow(item) {
       const expanded = expandedIds.has(item.id);
+      const pkey = nameKey(item.name);              // photos are keyed by item name
 
       // the one compact line: checkbox (taps check off, never expand), optional photo
       // thumbnail, name, a small read-only due chip, and a ▾/▴ caret. Tap line to expand.
@@ -724,9 +796,9 @@
         el("span", { className: "box", textContent: item.checked ? "☑" : "☐",
                      onclick: (e) => { e.stopPropagation(); toggleItem(item.id); } }),
       ];
-      if (photos.has(item.id)) {
-        topKids.push(el("img", { className: "thumb", src: photos.get(item.id), alt: "",
-                       onclick: (e) => { e.stopPropagation(); openLightbox(item.id); } }));
+      if (photos.has(pkey)) {
+        topKids.push(el("img", { className: "thumb", src: photos.get(pkey), alt: "",
+                       onclick: (e) => { e.stopPropagation(); openLightbox(item); } }));
       }
       topKids.push(el("span", { className: "item-name", textContent: item.name }));
       const top = el("div", { className: "item-top", onclick: () => toggleExpanded(item.id) }, topKids);
@@ -764,9 +836,9 @@
           sub.push(el("button", { className: "chip muted", title: "Set due date",
                          textContent: "📅 Add due date", onclick: () => editDueDate(item.id) }));
         }
-        sub.push(el("button", { className: "chip", title: photos.has(item.id) ? "Replace photo" : "Add a photo",
-                       textContent: photos.has(item.id) ? "📷 Change" : "📷 Add photo",
-                       onclick: () => pickPhoto(item.id) }));
+        sub.push(el("button", { className: "chip", title: photos.has(pkey) ? "Replace photo" : "Add a photo",
+                       textContent: photos.has(pkey) ? "📷 Change" : "📷 Add photo",
+                       onclick: () => pickPhoto(item) }));
         sub.push(el("span", { className: "flex-spacer" }));
         sub.push(el("button", { className: "icon-btn", textContent: "✏️", title: "Edit name",
                        onclick: () => renameItem(item.id) }));
@@ -788,6 +860,14 @@
     wireAddBar("new-item-input", "add-item-btn", addItem);
     document.getElementById("back-btn").onclick  = goHome;
     document.getElementById("clear-btn").onclick = clearChecked;
+
+    // autocomplete dropdown under the "Add an item" box
+    const itemInput = document.getElementById("new-item-input");
+    itemInput.addEventListener("input", renderSuggestions);
+    itemInput.addEventListener("focus", renderSuggestions);
+    itemInput.addEventListener("blur", () => setTimeout(() => {
+      document.getElementById("suggest").classList.remove("show");
+    }, 120));
 
     // when the shared date picker changes, save the new date onto the item we're editing
     document.getElementById("date-picker").addEventListener("change", (e) => {
@@ -815,12 +895,12 @@
     document.getElementById("photo-input").addEventListener("change", async (e) => {
       const file = e.target.files[0];
       e.target.value = "";                 // allow re-picking the same file later
-      if (!file || !photoTargetId) return;
-      const id = photoTargetId; photoTargetId = null;
+      if (!file || !photoTargetKey) return;
+      const key = photoTargetKey; photoTargetKey = null;
       try {
         toast("Adding photo…");
         const url = await compressImage(file, 1024, 0.72);
-        await setDoc(doc(db, "photos", id), { data: url });
+        await setDoc(doc(db, "photos", key), { data: url });
         toast("Photo added ✓");
       } catch (err) { console.error(err); toast("Couldn't add that photo."); }
     });
