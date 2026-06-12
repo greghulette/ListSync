@@ -668,14 +668,23 @@
     }
     function suggestionsFor(query) {
       const q = nameKey(query);
-      if (!q) return [];
       const list = currentList();
       const present = new Set((list ? list.items : []).map(i => nameKey(i.name)));
-      return [...history.values()]
-        .filter(h => nameKey(h.name).includes(q) && !present.has(nameKey(h.name)))
+      // Candidates = saved history PLUS every item name across ALL your lists, so it works
+      // before history fills up and surfaces names from your other lists. An empty query
+      // returns your most-recent names (handy for quick re-adds).
+      const cand = new Map();   // nameKey -> { name, lastUsed }
+      for (const h of history.values()) cand.set(nameKey(h.name), h);
+      for (const l of state.lists)
+        for (const it of l.items) {
+          const k = nameKey(it.name);
+          if (!cand.has(k)) cand.set(k, { name: it.name, lastUsed: 0 });
+        }
+      return [...cand.values()]
+        .filter(h => !present.has(nameKey(h.name)) && (!q || nameKey(h.name).includes(q)))
         .sort((a, b) => {
-          const ap = nameKey(a.name).startsWith(q) ? 0 : 1;          // prefix matches first…
-          const bp = nameKey(b.name).startsWith(q) ? 0 : 1;
+          const ap = q && nameKey(a.name).startsWith(q) ? 0 : 1;     // prefix matches first…
+          const bp = q && nameKey(b.name).startsWith(q) ? 0 : 1;
           return ap !== bp ? ap - bp : (b.lastUsed || 0) - (a.lastUsed || 0);  // …then most recent
         })
         .slice(0, 6);
